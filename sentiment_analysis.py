@@ -16,30 +16,29 @@ from nltk.stem import WordNetLemmatizer
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression, Lasso
 from wordcloud import WordCloud
 import seaborn as sns
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_curve, auc, roc_auc_score
+#from sklearn.metrics import roc_curve, auc, roc_auc_score
 import matplotlib.pyplot as plt
-from sklearn.metrics import average_precision_score, precision_recall_curve
-
+#from sklearn.metrics import average_precision_score, precision_recall_curve,r2_score
+from sklearn.metrics import confusion_matrix
 
 # Trim dataset for sentimental analysis #
 def initial_feature_selection(hotel_reviews):
     # append the positive and negative text reviews
     hotel_reviews["review_text"] = hotel_reviews["review_text_positive"] + "" + hotel_reviews["review_text_negative"]
-    # create  a new label
-    # bad reviews have overall ratings < 5
-    # good reviews have overall ratings >= 5
+    # create a new label
+    # bad reviews have overall ratings <= 5
+    # good reviews have overall ratings > 5
+    hotel_reviews.info()
     hotel_reviews["is_bad_review"] = hotel_reviews["review_score_badge"].apply(lambda x: 1 if x < 5 else 0)
     # select only review text and category column
-    return hotel_reviews[["review_text", "is_bad_review"]]
+    #return hotel_reviews[["review_text", "is_bad_review"]]
+    return hotel_reviews
 
-
-# Data Sampling #
-def data_sampling(hotel_reviews):
-    return hotel_reviews.sample(frac=0.1, replace=False, random_state=40)
 
 
 def get_wordnet_pos(pos_tag):
@@ -81,11 +80,14 @@ def text_cleaning(text):
 # Data Cleaning #
 def data_cleaning(hotel_reviews):
     # remove NaNs
+    print(hotel_reviews["review_text"].isna().sum())
     hotel_reviews = hotel_reviews.dropna()
+    print("Na dropped")
+    hotel_reviews.info()
     # remove 'N/As' from text
-    hotel_reviews.loc[: "review_text"] = hotel_reviews["review_text"].apply(lambda x: x.replace("N/A", ""))
+    hotel_reviews['review_text'] = hotel_reviews['review_text'].apply(lambda x: x.replace("N/A", " "))
     # clean text reviews
-    hotel_reviews.loc[:"raw_clean_text"] = hotel_reviews["review_text"].apply(lambda x: text_cleaning(x))
+    hotel_reviews['raw_clean_text'] = hotel_reviews['review_text'].apply(lambda x: text_cleaning(x))
     return hotel_reviews
 
 
@@ -119,18 +121,22 @@ def feature_engineering(hotel_reviews):
 
     tfidf = TfidfVectorizer(min_df=10)
     tfidf_result = tfidf.fit_transform(hotel_reviews["raw_clean_text"]).toarray()
-    tfidf_df = pd.DataFrame(tfidf_result, columns=tfidf.get_feature_names_out())
+    tfidf_df = pd.DataFrame(tfidf_result, columns=tfidf.get_feature_names())
     tfidf_df.columns = ["word_" + str(x) for x in tfidf_df.columns]
     tfidf_df.index = hotel_reviews.index
     return pd.concat([hotel_reviews, tfidf_df], axis=1)
 
 
-def show_wordcloud(reviews, title=None):
+def show_wordcloud(reviews,color, title=None):
+    # excluding words from wordcloud. 
+    stopwords=["as","is","has","have","did","with","nNot","Th","it","","The","Name","dtype","review_text","was","of","and","our","in","to","review_text_negative","review_text_positive","oppor","Length","object"]
     wordcloud = WordCloud(
+        stopwords=stopwords,
         background_color='white',
         max_words=200,
         max_font_size=40,
         scale=3,
+        colormap=color,
         random_state=42
     ).generate(str(reviews))
 
@@ -147,9 +153,11 @@ def show_wordcloud(reviews, title=None):
 # Exploratory data analysis #
 def data_analysis(hotel_reviews):
     # show is_bad_review distribution
-    hotel_reviews["is_bad_review"].value_counts(normalize=True)
-    # print wordcloud
-    show_wordcloud(hotel_reviews["review_text"])
+    print(hotel_reviews.head())
+    print("is_bad_review", hotel_reviews["is_bad_review"].value_counts(normalize=True))
+
+    # print wordcloud for all reviews
+    show_wordcloud(hotel_reviews["review_text"],"brg")
     # highest positive sentiment reviews (with more than 5 words)
     hotel_reviews[hotel_reviews["total_num_words"] >= 5].sort_values("pos", ascending=False)[
         ["review_text", "pos"]].head(10)
@@ -171,61 +179,57 @@ def data_analysis(hotel_reviews):
 
 
 # Press the green button in the gutter to run the script.
-def modeling(hotel_reviews):
-    # feature selection
-    label = "is_bad_review"
-    ignore_cols = [label, "review_text", "raw_clean_text"]
-    features = [c for c in hotel_reviews.columns if c not in ignore_cols]
-
-    # split the data into train and test
-    X_train, X_test, y_train, y_test = train_test_split(hotel_reviews[features], hotel_reviews[label], test_size=0.20,
-                                                        random_state=40)
-
+def modeling_using_RT(hotel_reviews, X_train, X_test, y_train, y_test):
     # train a random forest classifier
-    rf = RandomForestClassifier(n_estimators=100, random_state=40)
-    rf.fit(X_train, y_train)
+    rf = RandomForestClassifier(n_estimators=100, random_state=65)
+    rf = rf.fit(X_train, y_train)
+    y_pred = rf.predict(X_test)
+    # Calculate the confusion matrix
+    conf_matrix = confusion_matrix(y_true=y_test, y_pred=y_pred)
+    # Print the confusion matrix using Matplotlib
+    fig, ax = plt.subplots(figsize=(8.5, 7.5))
+    ax.matshow(conf_matrix, cmap=plt.cm.Blues, alpha=0.3)
+    for i in range(conf_matrix.shape[0]):
+        for j in range(conf_matrix.shape[1]):
+            ax.text(x=j, y=i,s=conf_matrix[i, j], va='center', ha='center', size='xx-large')
+     
+    labels=['Good Review','Bad Review']
+    ax.set_xticklabels([''] + labels)
+    ax.set_yticklabels([''] + labels,rotation=90)
+    ax.xaxis.set_label_position('top')
+    plt.xlabel('Predictions', fontsize=18)
+    plt.ylabel('Actuals', fontsize=18)
+    plt.title('Confusion Matrix', fontsize=18)
+    plt.show()
+    print("Score for random forest", rf.score(X_test, y_test))
 
-    # show feature importance
-    important_features_df = pd.DataFrame({"feature": features, "importance": rf.feature_importances_}).sort_values(
-        "importance", ascending=False)
-    important_features_df.head(20)
-    # y_prediction = [x[1] for x in rf.predict_proba(X_test)]
-    # fpr, tpr, thresholds = roc_curve(y_test, y_prediction, pos_label=1)
-    #
-    # roc_auc = auc(fpr, tpr)
-    #
-    # plt.figure(1, figsize=(15, 10))
-    # lw = 2
-    # plt.plot(fpr, tpr, color='darkred',
-    #          lw=lw, label='ROC curve (area = %0.2f)' % roc_auc)
-    # plt.plot([0, 1], [0, 1], lw=lw, linestyle='--')
-    # plt.xlim([0.0, 1.0])
-    # plt.ylim([0.0, 1.0])
-    # plt.xlabel('False Positive Rate')
-    # plt.ylabel('True Positive Rate')
-    # plt.title('Receiver operating characteristic example')
-    # plt.legend(loc="lower right")
-    # plt.show()
-    #
-    # average_precision = average_precision_score(y_test, y_prediction)
-    #
-    # precision, recall, _ = precision_recall_curve(y_test, y_prediction)
-    #
-    # # In matplotlib < 1.5, plt.fill_between does not have a 'step' argument
-    # step_kwargs = ({'step': 'post'}
-    #                if 'step' in signature(plt.fill_between).parameters
-    #                else {})
-    #
-    # plt.figure(1, figsize=(15, 10))
-    # plt.step(recall, precision, color='b', alpha=0.2,
-    #          where='post')
-    # plt.fill_between(recall, precision, alpha=0.2, color='b', **step_kwargs)
-    #
-    # plt.xlabel('Recall')
-    # plt.ylabel('Precision')
-    # plt.ylim([0.0, 1.05])
-    # plt.xlim([0.0, 1.0])
-    # plt.title('2-class Precision-Recall curve: AP={0:0.2f}'.format(average_precision))
+
+def modeling_using_logistic(raw_clean_text, X_train, X_test, y_train, y_test):
+    # Define the model
+    model = LogisticRegression(random_state=0, solver='lbfgs',
+                               multi_class='multinomial')
+    # Use the logistic regression model to make sentiment label predictions
+    model = model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    # Calculate the confusion matrix
+    conf_matrix = confusion_matrix(y_true=y_test, y_pred=y_pred)
+    # Print the confusion matrix using Matplotlib
+    fig, ax = plt.subplots(figsize=(8.5, 7.5))
+    ax.matshow(conf_matrix, cmap=plt.cm.Blues, alpha=0.3)
+    for i in range(conf_matrix.shape[0]):
+        for j in range(conf_matrix.shape[1]):
+            ax.text(x=j, y=i,s=conf_matrix[i, j], va='center', ha='center', size='xx-large')
+    
+    labels=['Good Review','Bad Review']
+    ax.set_xticklabels([''] + labels)
+    ax.set_yticklabels([''] + labels,rotation=90)
+    ax.xaxis.set_label_position('top')
+    plt.xlabel('Predictions', fontsize=18)
+    plt.ylabel('Actuals', fontsize=18)
+    plt.title('Confusion Matrix', fontsize=18)
+    plt.show()
+    # score
+    print("Score for logistic regression", model.score(X_test, y_test))
 
 
 def download_packages():
@@ -236,15 +240,34 @@ def download_packages():
     nltk.download('vader_lexicon')
 
 
+
 if __name__ == '__main__':
     download_packages()
     # load data into df
-    hotel_reviews_df = pd.read_csv("hotel_reviews.csv")
+    hotel_reviews_df = pd.read_csv("H:\Brandeis\Study\Sem 3(Fall22)\Marketing analytics\Final project\codes\hotel_reviews.csv")
+    print(hotel_reviews_df.columns)
+    print("Before cleaning")
+    hotel_reviews_df.info()
     hotel_reviews_df = initial_feature_selection(hotel_reviews_df)
-    hotel_reviews_df = data_sampling(hotel_reviews_df)
+    print(hotel_reviews_df.head(25))
     hotel_reviews_df = data_cleaning(hotel_reviews_df)
+    print("After cleaning")
+    # print wordcloud for positive reviews
+    show_wordcloud(hotel_reviews_df["review_text_positive"],"Blues")
+    # print wordcloud for negative reviews
+    show_wordcloud(hotel_reviews_df["review_text_negative"],"Reds")
+    hotel_reviews_df=hotel_reviews_df[["raw_clean_text","review_text", "is_bad_review"]]
+    hotel_reviews_df.info()
     hotel_reviews_df = feature_engineering(hotel_reviews_df)
     hotel_reviews_df.head()
     hotel_reviews_df.shape
     data_analysis(hotel_reviews_df)
-    modeling(hotel_reviews_df)
+    # feature selection
+    y = hotel_reviews_df['is_bad_review']
+    X = hotel_reviews_df.drop(columns=['is_bad_review', 'review_text', 'raw_clean_text'])
+    
+    # split the data into train and test
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.20,random_state=65)
+    modeling_using_RT(hotel_reviews_df, X_train, X_test, y_train, y_test)
+    modeling_using_logistic(hotel_reviews_df, X_train, X_test, y_train, y_test)
+    
